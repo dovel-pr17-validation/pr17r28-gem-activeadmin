@@ -1,0 +1,135 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (${{ matrix.ruby }}, ${{ matrix.rails }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby:
+          - "4.0"
+          - "3.4"
+          - "3.3"
+        os:
+          - ubuntu-latest
+        rails:
+          - rails_81
+          - rails_80
+          - rails_72
+        exclude:
+          - ruby: '4.0'
+            os: ubuntu-latest
+            rails: rails_72
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure bundler (default)
+        run: |
+          echo "BUNDLE_GEMFILE=Gemfile" >> "$GITHUB_ENV"
+        if: matrix.rails == 'rails_81'
+      - name: Configure bundler (alternative)
+        run: |
+          echo "BUNDLE_GEMFILE=gemfiles/${{ matrix.rails }}/Gemfile" >> "$GITHUB_ENV"
+        if: matrix.rails != 'rails_81'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          rubygems: latest
+      - name: Create test app
+        run: bin/rake setup
+      - name: Restore cached RSpec runtimes
+        uses: actions/cache@v6
+        with:
+          path: tmp/parallel_runtime_rspec.log
+          key: runtimes-rspec-${{ matrix.ruby }}-${{ matrix.rails }}-${{ hashFiles('tmp/parallel_runtime_rspec.log') }}
+      - name: Run RSpec tests
+        env:
+          COVERAGE: true
+        run: |
+          bin/parallel_rspec
+          RSPEC_FILESYSTEM_CHANGES=true bin/rspec
+      - name: Restore cached cucumber runtimes
+        uses: actions/cache@v6
+        with:
+          path: tmp/parallel_runtime_cucumber.log
+          key: runtimes-cucumber-${{ matrix.ruby }}-${{ matrix.rails }}-${{ hashFiles('tmp/parallel_runtime_cucumber.log') }}
+      - name: Run Cucumber features
+        env:
+          COVERAGE: true
+        run: |
+          bin/parallel_cucumber --fail-fast
+          bin/cucumber --profile filesystem-changes
+          bin/cucumber --profile class-reloading
+      - name: Rename coverage file by matrix run
+        run: mv coverage/coverage.xml coverage/coverage-ruby-${{ matrix.ruby }}-${{ matrix.rails }}.xml
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-ruby-${{ matrix.ruby }}-${{ matrix.rails }}
+          path: coverage
+          if-no-files-found: error
+
+  upload_coverage:
+    name: Upload Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    # Do not run on forks
+    if: ${{ github.repository_owner == 'activeadmin' }}
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: coverage
+          pattern: coverage-ruby-*
+          merge-multiple: true
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: coverage
+          fail_ci_if_error: true
+
+  test_docs_build:
+    permissions:
+      contents: read
+      pull-requests: read
+    name: Build docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: tj-actions/changed-files@v47
+        id: changed-files
+        with:
+          files: |
+            docs/**
+            package*.json
+      - uses: actions/setup-node@v7
+        if: steps.changed-files.outputs.any_changed == 'true'
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+        if: steps.changed-files.outputs.any_changed == 'true'
+      - run: npm run docs:test
+        if: steps.changed-files.outputs.any_changed == 'true'

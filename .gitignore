@@ -1,0 +1,16 @@
+/tmp
+/tasks/tmp
+/coverage
+/.yardoc
+/.ruby-version
+/pkg
+.bundle
+/.rspec_failures
+/node_modules
+/src
+/vendor/bundle
+/rails_70
+/dist
+docs/.vitepress/cache
+docs/.vitepress/dist
+docs/.vitepress/.temp
